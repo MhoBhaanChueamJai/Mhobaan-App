@@ -1,0 +1,243 @@
+import React from 'react';
+import { AudioQuality, IOSOutputFormat, createAudioPlayer, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, type AudioPlayer } from 'expo-audio';
+import { Platform } from 'react-native';
+import { speakParts, transcribe, understandHeard, type HeardContext } from './voiceAI';
+import { playWeb, stopWeb } from './webAudio';
+
+/**
+ * คุยด้วยเสียงในแชท: ฟัง (จับช่วงเงียบตัดประโยค) → ถอดเสียง → ส่งเข้าแชทเหมือนพิมพ์ (onHeard)
+ * → แชทตอบด้วยการ์ด/ข้อความแบบเดิม → say() อ่านข้อความสั้นออกเสียง → ฟังต่อเอง หรือพัก (การ์ดที่ต้องแตะ / ฉุกเฉิน)
+ */
+export type VoicePhase = 'off' | 'starting' | 'listening' | 'transcribing' | 'waiting' | 'speaking' | 'paused' | 'error';
+
+/** WAV 16 kHz mono (Qwen3-ASR ต้องการ) · เปิดวัดระดับเสียงไว้จับช่วงเงียบ */
+const REC_OPTIONS = {
+  extension: '.wav',
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 256000,
+  isMeteringEnabled: true,
+  ios: { extension: '.wav', outputFormat: IOSOutputFormat.LINEARPCM, audioQuality: AudioQuality.MAX, linearPCMBitDepth: 16, linearPCMIsBigEndian: false, linearPCMIsFloat: false },
+  android: { extension: '.m4a', outputFormat: 'mpeg4' as const, audioEncoder: 'aac' as const },
+  web: { mimeType: 'audio/webm' },
+};
+/** เงียบหลังพูดนานเท่านี้ = จบประโยค (ms · เผื่อหยุดคิดกลางประโยค) · พูดยาวสุดต่อรอบ · รอแชทตอบนานสุด */
+const SILENCE_MS = 2300;
+/** วัดเสียงพื้นหลังหลังเปิดไมค์ (ms) · ดังกว่าพื้นหลังกี่ dB = พูด · ต่ำกว่ากี่ dB = เงียบ · ดังต่อเนื่องนานเท่าไหร่ถึงนับว่าพูด */
+const CALIBRATE_MS = 350;
+const SPEAK_DB = 12;
+const QUIET_DB = 6;
+const MIN_SPEECH_MS = 250;
+const MAX_TURN_MS = 60000;
+const MAX_WAIT_MS = 60000;
+
+export function useVoiceChat(onHeard: (text: string) => void, contextOf?: () => HeardContext) {
+  const [phase, setPhaseState] = React.useState<VoicePhase>('off');
+  const [hint, setHint] = React.useState<string | null>(null);
+  const [muted, setMuted] = React.useState(false);
+  const phaseRef = React.useRef<VoicePhase>('off');
+  const setPhase = (p: VoicePhase) => {
+    phaseRef.current = p;
+    setPhaseState(p);
+  };
+  const mutedRef = React.useRef(muted);
+  mutedRef.current = muted;
+  const heardRef = React.useRef(onHeard);
+  heardRef.current = onHeard;
+  const ctxRef = React.useRef(contextOf);
+  ctxRef.current = contextOf;
+  const recorder = useAudioRecorder(REC_OPTIONS);
+  const player = React.useRef<AudioPlayer | null>(null);
+  const alive = React.useRef(true);
+  // ตัวบันทึกถูกปล่อยไปแล้ว (ออกจากหน้า / ออกจากระบบ) → อ่านค่าแล้ว error · ถือว่าไม่ได้บันทึก
+  const isRec = () => {
+    try {
+      return alive.current && recorder.isRecording;
+    } catch {
+      return false;
+    }
+  };
+  React.useEffect(
+    () => () => {
+      const rec = isRec();
+      alive.current = false;
+      try {
+        player.current?.remove();
+      } catch {
+        /* ปล่อยไปแล้ว */
+      }
+      player.current = null;
+      if (rec) void Promise.resolve().then(() => recorder.stop()).catch(() => undefined);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const stopMedia = async () => {
+    player.current?.pause();
+    if (Platform.OS === 'web') stopWeb();
+    if (isRec()) await recorder.stop().catch(() => undefined);
+  };
+
+  const listen = async () => {
+    player.current?.pause();
+    if (Platform.OS === 'web') stopWeb();
+    setHint(null);
+    // แสดงโหมดเสียงทันที (ไม่รอขอสิทธิ์/เตรียมไมค์ → ไม่ค้างตอนกด)
+    setPhase('starting');
+    const perm = await requestRecordingPermissionsAsync();
+    if (!perm.granted) {
+      setHint('ยังไม่ได้อนุญาตไมโครโฟน');
+      return setPhase('error');
+    }
+    try {
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      if (phaseRef.current !== 'starting') return;
+      spoke.current = false;
+      silentFor.current = 0;
+      startedAt.current = Date.now();
+      lastTick.current = Date.now();
+      floor.current = -50;
+      loudFor.current = 0;
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      if (alive.current && phaseRef.current === 'starting') setPhase('listening');
+      else await recorder.stop().catch(() => undefined);
+    } catch {
+      if (alive.current) setPhase('error');
+    }
+  };
+
+  const pause = async (h?: string) => {
+    await stopMedia();
+    setHint(h ?? null);
+    setPhase('paused');
+  };
+
+  /** จบประโยค → ถอดเสียง → ส่งเข้าแชท แล้วรอแชทตอบ · ยังไม่ได้พูด: force = พัก / ไม่ force = ฟังต่อ */
+  const finishTurn = async (force = false) => {
+    if (!isRec()) return;
+    await recorder.stop();
+    const uri = recorder.uri;
+    if (!uri || !spoke.current) return force ? pause() : void listen();
+    setPhase('transcribing');
+    try {
+      const ctx = ctxRef.current?.();
+      const raw = await transcribe(uri, ctx);
+      if (!alive.current || phaseRef.current !== 'transcribing') return;
+      // ถอดได้แค่เสียงรบกวน (ว่าง / 1 ตัวอักษร · ถอดเป็นภาษาอื่นแล้วถูกตัดทิ้ง) → พูดแล้วแต่ไม่ได้ความ = ขอให้พูดใหม่ (ไม่เงียบไปเฉย ๆ)
+      if (raw.replace(/[\s.,!?…]/g, '').length < 2) return void say('ขอโทษค่ะ ฟังไม่ชัด พูดอีกครั้งได้ไหมคะ', 'listen');
+      // เทียบกับบทสนทนา: แก้คำที่ถอดเพี้ยน · ฟังไม่ได้ความ → ขอให้พูดใหม่ (ไม่ส่งคำผิด ๆ เข้าแชท)
+      const heard = await understandHeard(raw, ctx);
+      if (!alive.current || phaseRef.current !== 'transcribing') return;
+      if (!heard.clear) return void say('ขอโทษค่ะ ฟังไม่ชัด พูดอีกครั้งได้ไหมคะ', 'listen');
+      const text = heard.text;
+      setPhase('waiting');
+      heardRef.current(text);
+      // แชทไม่ตอบ (ค้าง) → พักไว้ ไม่ค้างหน้า "กำลังคิด"
+      setTimeout(() => alive.current && phaseRef.current === 'waiting' && void pause(), MAX_WAIT_MS);
+    } catch {
+      if (alive.current) setPhase('error');
+    }
+  };
+
+  /** อ่านออกเสียง (ปิดเสียง/พูดไม่ได้ = ข้าม) แล้วฟังต่อ หรือพักพร้อมคำบอก */
+  const say = async (text: string, then: 'listen' | 'pause', h?: string) => {
+    setPhase('speaking');
+    if (text && !mutedRef.current) {
+      try {
+        // ทีละประโยค: สร้างเสียงทุกประโยคพร้อมกัน เริ่มพูดประโยคแรกทันทีที่ได้ (ไม่รอทั้งข้อความ — เดิมเงียบนานก่อนพูด)
+        const parts = speakParts(text);
+        for (let i = 0; i < parts.length; i++) {
+          const uri = await parts[i];
+          if (!alive.current || phaseRef.current !== 'speaking') return;
+          if (!uri) continue;
+          if (i === 0) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+          // เว็บ: <audio> ตัวเดียวที่ปลดล็อกจากการแตะ (Safari บน iPhone)
+          if (Platform.OS === 'web') {
+            await playWeb(uri, () => alive.current && phaseRef.current === 'speaking');
+            continue;
+          }
+          // ตัวเล่นตัวเดียว เปลี่ยนเสียง (ไม่ทิ้งแล้วสร้างใหม่ทุกครั้ง)
+          const p = (player.current ??= createAudioPlayer(null));
+          await new Promise<void>((resolve) => {
+            const sub = p.addListener('playbackStatusUpdate', (st) => {
+              if (st.didJustFinish) {
+                sub.remove();
+                resolve();
+              }
+            });
+            p.replace({ uri });
+            p.play();
+            // กันค้าง: เสียงไม่จบเอง
+            setTimeout(resolve, 20000);
+          });
+        }
+      } catch {
+        /* พูดไม่ได้ → อ่านจากแชท */
+      }
+    }
+    // ถูกขัด/ปิดระหว่างพูด → ไม่ทำต่อ
+    if (!alive.current || phaseRef.current !== 'speaking') return;
+    if (then === 'listen') void listen();
+    else void pause(h);
+  };
+
+  /** ออกจากโหมดเสียง (กลับไปพิมพ์) */
+  const off = async () => {
+    setPhase('off');
+    setHint(null);
+    await stopMedia();
+    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+  };
+
+  /** ปุ่มหลัก: ฟัง = ส่งที่พูด (ยังไม่พูด = พัก) · ไทยเวลพูด = ขัดแล้วฟัง · พัก/ผิดพลาด/ปิด = เริ่มฟัง */
+  const toggle = () => {
+    const p = phaseRef.current;
+    if (p === 'listening') void finishTurn(true);
+    else if (p === 'speaking' || p === 'paused' || p === 'error' || p === 'off') void listen();
+    // starting / transcribing / waiting = รอ
+  };
+
+  // จับช่วงเงียบ (ระดับเสียงมาจาก tick ถี่ ๆ — วัดใน component ช่องแชท ไม่ให้หน้าแชททั้งหน้า render ตาม)
+  // ตัดเสียงแวดล้อม: วัดระดับเสียงพื้นหลังตลอด (ลงเร็ว ขึ้นช้า — เสียงพัดลม/แอร์/คนคุยรอบ ๆ ที่ดังคงที่ = พื้นหลัง)
+  // พูด = ดังกว่าพื้นหลัง ≥ SPEAK_DB ต่อเนื่องพอ (ไม่นับเสียงกระแทกสั้น ๆ) · เงียบ = กลับมาใกล้พื้นหลัง (< พื้นหลัง + QUIET_DB)
+  const spoke = React.useRef(false);
+  const silentFor = React.useRef(0);
+  const loudFor = React.useRef(0);
+  const startedAt = React.useRef(0);
+  const floor = React.useRef(-50);
+  const lastTick = React.useRef(0);
+  const tick = (metering: number | undefined) => {
+    if (phaseRef.current !== 'listening' || !isRec()) return;
+    const now = Date.now();
+    const dt = Math.min(200, now - lastTick.current);
+    lastTick.current = now;
+    const m = metering ?? -160;
+    // ช่วงแรกหลังเปิดไมค์ = วัดพื้นหลังอย่างเดียว
+    if (now - startedAt.current < CALIBRATE_MS) {
+      floor.current = floor.current === -50 ? m : floor.current * 0.7 + m * 0.3;
+      return;
+    }
+    // ลงเร็ว (เงียบลง) · ขึ้นช้ามาก (ไม่ให้เสียงพูดดันพื้นหลังขึ้นมา)
+    // ขึ้นเฉพาะตอนไม่ได้พูด (เดิมขึ้นช้า ๆ ระหว่างพูดด้วย → เล่านาน ๆ พื้นหลังสูงจนเสียงพูดกลายเป็น "เงียบ" แล้วถูกตัด)
+    const over0 = m - floor.current;
+    if (m < floor.current) floor.current = floor.current * 0.6 + m * 0.4;
+    else if (over0 < QUIET_DB && loudFor.current === 0) floor.current += Math.min(over0, 4) * 0.03 * (dt / 50);
+    const over = m - floor.current;
+    if (over >= SPEAK_DB) {
+      loudFor.current += dt;
+      if (loudFor.current >= MIN_SPEECH_MS) spoke.current = true;
+      silentFor.current = 0;
+    } else {
+      loudFor.current = Math.max(0, loudFor.current - dt);
+      if (spoke.current && over < QUIET_DB) silentFor.current += dt;
+    }
+    if ((spoke.current && silentFor.current >= SILENCE_MS) || now - startedAt.current > MAX_TURN_MS) void finishTurn();
+  };
+  /** ระดับเสียงสำหรับเส้นแสง: เทียบกับพื้นหลัง (เสียงแวดล้อมไม่ทำให้คลื่นขึ้น) */
+  const levelOf = (metering: number | undefined) => Math.max(0, Math.min(1, ((metering ?? -160) - floor.current - QUIET_DB) / 26));
+
+  return { phase, hint, muted, setMuted, recorder, tick, levelOf, listen, pause, say, off, toggle };
+}
+export type VoiceChat = ReturnType<typeof useVoiceChat>;

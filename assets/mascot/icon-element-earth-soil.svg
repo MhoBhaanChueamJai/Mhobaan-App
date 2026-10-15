@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none">
+  <defs><linearGradient id="icon-earth-soil" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B98A5E"/><stop offset="1" stop-color="#8F6440"/></linearGradient><clipPath id="icon-earth-soil-clip"><circle cx="48" cy="48" r="48"/></clipPath></defs>
+  <g clip-path="url(#icon-earth-soil-clip)">
+    <g id="soil" transform="translate(0 7)">
+      <path d="M-4 80C14 70 32 67 48 67S82 70 100 80V100H-4Z" fill="url(#icon-earth-soil)"/>
+      <path d="M8 79C22 73 34 71 46 71" stroke="#E2C29F" stroke-width="2.2" stroke-linecap="round" opacity="0.7"/>
+      <ellipse cx="22" cy="84" rx="5" ry="3.4" fill="#E4CBAE"/>
+      <ellipse cx="72" cy="83" rx="6" ry="4" fill="#E4CBAE"/>
+      <ellipse cx="60" cy="90" rx="3.4" ry="2.4" fill="#EEDCC6"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,448 @@
+import React from 'react';
+import { Pressable, View } from 'react-native';
+import { AppBar, Avatar, Badge, Button, Card, Col, Divider, GridRow, HStack, Icon, JourneyStepper, ListItem, Screen, SectionHeader, Switch, Text, PainAreaChart, VStack, radius, space, useTheme, type IconName, BodyIcon, painColor, ScreenSkeleton, useScreenData, Panel, StatTile, Tag, RowLink, TINT, ProfileAvatar, BottomSheet, TextField, ReplyChips, InfoRow, TrendArrow, Mascot, ElementMascotIcon } from '../../design-system';
+import { NotFoundScreen } from './NotFound';
+import { dominantElement } from '../../data/thaiMassageKnowledge';
+import { HISTORY, useJourney } from '../../state/JourneyContext';
+import { TREATMENT_CASES, ARCHIVED_CASES, HEALTH_OPTIONS, MED_OPTIONS, ALLERGY_OPTIONS, healthKnownOf, type HealthField, type TreatmentCase } from '../../data/homeFeed';
+import { TreatmentDetailBody, VisitTabs } from './home/TreatmentDetailBody';
+
+import { useNav } from '../../navigation/types';
+import { CERTIFIED_METHODS, HEALER_CERT } from '../../data/mb5';
+
+/* ============================================================ 19 PROGRESS */
+
+/**
+ * ทะเบียนการรักษา ม.บ.5 — รายชื่อคนไข้ที่ดูแล (กำลังรักษา + รักษาจบแล้ว · เก็บ 5 ปีตามระเบียบ) · แตะเพื่อดูรายละเอียดแบบ bento
+ * คนไข้ที่รักษาครบตามนัดแล้วย้ายมาอยู่ที่นี่ (ไม่อยู่บนหน้าแรก)
+ */
+export function ProgressScreen() {
+  // โหลดข้อมูลของหน้า (ครั้งแรก) → skeleton
+  const loading = useScreenData('history');
+  const nav = useNav();
+  const { colors } = useTheme();
+  // ใบการรักษาชุดเดียวกับหน้าแรก (รวมครั้งที่รักษาเพิ่ม/นัดที่เปลี่ยน) · ยังไม่มีครั้งการรักษา = ไม่แสดงในประวัติ
+  const { newPatient, cases } = useJourney();
+  const active = cases.filter((c) => c.visits.length > 0 && !c.finished);
+  // ครบตามนัดแล้ว (ครบครั้ง ไม่มีนัดค้าง) → รักษาจบแล้ว · ล่าสุดก่อน
+  const done = [...cases.filter((c) => c.finished && c.visits.length > 0).reverse(), ...(newPatient ? [] : ARCHIVED_CASES)];
+  /**
+   * แถวคนไข้ (รายการกระชับ 1 คน = 1 แถว): ไอคอน · ชื่อ + สถานะการรักษา · ป้ายดีขึ้น % · ลูกศร
+   * กำลังรักษา = ครั้งที่ใช้ไป/ทั้งหมด + นัดถัดไป · จบแล้ว = ครบ N ครั้ง + ช่วงวันที่
+   */
+  const Row = ({ c, finished, first: isFirst }: { c: TreatmentCase; finished?: boolean; first?: boolean }) => {
+    const first = c.visits[0];
+    const last = c.visits[c.visits.length - 1];
+    const now = last.selfPain ?? last.painAfter;
+    const pct = first.painBefore ? Math.round(((first.painBefore - now) / first.painBefore) * 100) : 0;
+    const good = pct > 0;
+    const used = Math.min(c.course.total, Math.max(c.course.done, c.visits.length));
+    const hasNext = !finished && c.appointment.date !== '-';
+    const sub = finished
+      ? `ครบ ${c.course.total} ครั้ง · ${first.date === last.date ? first.date : `${first.date} – ${last.date}`}`
+      : `ครั้งที่ ${used}/${c.course.total} · ${hasNext ? `นัด ${c.appointment.today ? 'วันนี้' : c.appointment.date}` : 'รอนัดติดตาม'}`;
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${c.short} ${sub} ${pct ? (good ? `ดีขึ้น ${pct}%` : `อาการเพิ่ม ${-pct}%`) : ''} ดูรายละเอียด`}
+        onPress={() => nav.navigate('TreatmentHistory', { caseId: c.id })}
+        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: space[3], paddingVertical: space[3], paddingHorizontal: space[4], borderTopWidth: isFirst ? 0 : 1, borderTopColor: colors.border.subtle, backgroundColor: pressed ? colors.surface.sunken : 'transparent' })}
+      >
+        {/* หุ่นในวงกลม ซูมบริเวณที่รักษา (สีตามระดับปวดล่าสุด แบบเดียวกับบนหุ่น) · จบแล้ว = โทนเทา */}
+        <BodyIcon pins={c.areas.map((a) => a.pin)} color={finished ? colors.text.tertiary : painColor(now)} size={40} />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text variant="labelLg" numberOfLines={1}>
+            {c.short}
+          </Text>
+          <Text variant="bodyXs" tone="secondary" numberOfLines={1}>
+            {sub}
+          </Text>
+        </View>
+        {pct ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, height: 26, paddingHorizontal: space[2], borderRadius: radius.full, backgroundColor: good ? colors.brand.subtle : colors.status.danger.bg }}>
+            <TrendArrow up={!good} color={good ? colors.brand.primary : colors.status.danger.fg} />
+            <Text variant="labelSm" color={good ? colors.brand.primary : colors.status.danger.fg}>
+              {good ? `ดีขึ้น ${pct}%` : `อาการเพิ่ม ${-pct}%`}
+            </Text>
+          </View>
+        ) : null}
+        <Icon name="chevron-right" size="sm" color={colors.text.tertiary} />
+      </Pressable>
+    );
+  };
+  /** กลุ่มแถว: กรอบเดียว เส้นคั่นระหว่างแถว */
+  const Group = ({ items, finished }: { items: TreatmentCase[]; finished?: boolean }) => (
+    <View style={{ borderRadius: 20, borderWidth: 1, borderColor: colors.border.subtle, backgroundColor: colors.surface.default, overflow: 'hidden' }}>
+      {items.map((c, i) => (
+        <Row key={c.id} c={c} finished={finished} first={i === 0} />
+      ))}
+    </View>
+  );
+  return (
+    <Screen header={<AppBar title="ทะเบียนการรักษา ม.บ.5" />}>
+      {loading ? (
+        <ScreenSkeleton variant="list" count={3} />
+      ) : (
+      <>
+      {active.length ? (
+        <>
+          <SectionHeader title="กำลังรักษา" />
+          <Group items={active} />
+        </>
+      ) : null}
+      {done.length ? (
+        <>
+          <SectionHeader title="รักษาจบแล้ว" />
+          <Group items={done} finished />
+        </>
+      ) : null}
+      {!active.length && !done.length ? (
+        <View style={{ alignItems: 'center', gap: space[3], paddingVertical: space[6] }}>
+          <Mascot pose="rest" size={140} />
+          <Text variant="bodyMd" tone="secondary" align="center">
+            ยังไม่มีทะเบียนการรักษา
+          </Text>
+        </View>
+      ) : null}
+      </>
+      )}
+    </Screen>
+  );
+}
+
+/** รายละเอียดทะเบียนการรักษาของคนไข้หนึ่งคน — หน้าตาเดียวกับ bottom sheet ในแชท (และหน้าคนไข้ของหลังบ้าน) */
+export function TreatmentHistoryScreen({ route }: { route: { params: { caseId: string } } }) {
+  const nav = useNav();
+  const { cases } = useJourney();
+  const { colors } = useTheme();
+  const c = [...cases, ...ARCHIVED_CASES].find((x) => x.id === route.params.caseId);
+  const [visit, setVisit] = React.useState<number | null>(null);
+  if (!c) return <NotFoundScreen title="ทะเบียนการรักษา" />;
+  // เนื้อหาเดียวกับ bottom sheet รายละเอียดการรักษาในแชท · แถบเลือกครั้งค้างใต้หัวหน้า
+  return (
+    <Screen
+      header={
+        <View style={{ backgroundColor: colors.surface.canvas, paddingBottom: space[2] }}>
+          <AppBar title={`รักษา${c.short}`} onBack={() => nav.goBack()} />
+          <View style={{ paddingHorizontal: space[4] }}>
+            <VisitTabs inset={space[4]} count={c.visits.length} dates={c.visits.map((v) => v.date)} value={visit} onChange={setVisit} />
+          </View>
+        </View>
+      }
+    >
+      <TreatmentDetailBody tc={c} visit={visit} />
+    </Screen>
+  );
+}
+
+/* ============================================================ PROFILE */
+
+export function ProfileScreen() {
+  // โหลดข้อมูลของหน้า (ครั้งแรก) → skeleton
+  const loading = useScreenData('profile');
+  const nav = useNav();
+  const { colors, textScale, setTextScale } = useTheme();
+  const { client, profile, setProfile, signOut, elements, newPatient, account, setAccount, cases, drafts, looseBookings, log, bills } = useJourney();
+  const { elementsDone } = useJourney();
+  // ธาตุจากแบบประเมินเท่านั้น · คนใหม่ที่ยังไม่ทำ = ป้าย "ประเมินธาตุ"
+  const element = newPatient && !elementsDone ? null : dominantElement(elements);
+  const visits = cases.reduce((n, c) => n + c.visits.length, 0);
+  // นัดถัดไปจากทุกที่ (ใบการรักษา · ใบร่าง · นัดไว้ก่อนบันทึก) · ยกเลิกแล้ว = ไม่นับ · วันนี้มาก่อน
+  const appts = [
+    ...cases.filter((c) => c.appointment.date !== '-').map((c) => ({ date: c.appointment.today ? 'วันนี้' : c.appointment.date, time: c.appointment.time })),
+    ...drafts.filter((d) => d.booking).map((d) => ({ date: d.booking!.date, time: d.booking!.time })),
+    ...looseBookings.map((b) => ({ date: b.date, time: b.time })),
+  ];
+  const nextAppt = appts.find((a) => a.date === 'วันนี้') ?? appts.find((a) => a.date === 'พรุ่งนี้') ?? appts[0];
+  /** แก้ข้อมูลสุขภาพ (กรอกเอง — Health ID ไม่ส่งมา) */
+  const [editing, setEditing] = React.useState<null | 'conditions' | 'medications' | 'allergies'>(null);
+  const [linking, setLinking] = React.useState(false);
+  // ยังไม่ได้กรอก ≠ ไม่มี (ผู้ใช้ใหม่ยังไม่ได้บอก)
+  const none = (a: string[], f?: HealthField) => a.join(', ') || ((f ? !healthKnownOf(profile, f) : profile.healthKnown === false) ? 'ยังไม่ได้กรอก' : 'ไม่มี');
+  return (
+    <Screen header={<AppBar title="โปรไฟล์" />}>
+      {loading ? (
+        <ScreenSkeleton variant="list" count={4} />
+      ) : (
+      <>
+      {/* หัวโปรไฟล์พ่อหมอ: รูป (+ ป้ายธาตุ) · ชื่อ · เลข ม.บ.3/อายุ/ประเภทหมอ · ป้ายโรคประจำตัว */}
+      <Panel>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space[3] }}>
+          {/* แตะรูป/ชื่อ = ข้อมูลส่วนตัว (แก้รูป เบอร์โทร ที่หน้านั้น) */}
+          <Pressable accessibilityRole="button" accessibilityLabel="ดูข้อมูลส่วนตัว" onPress={() => nav.navigate('ProfileInfo')}>
+            <ProfileAvatar sex={account?.sex ?? 'ชาย'} size={68} photo={account?.photo ?? account?.avatar} />
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="ดูข้อมูลส่วนตัว" onPress={() => nav.navigate('ProfileInfo')} style={{ flex: 1, gap: 2 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space[1] }}>
+              <Text variant="titleLg" style={{ flexShrink: 1 }}>
+                {client.name}
+              </Text>
+              <Icon name="chevron-right" size="sm" color={colors.text.tertiary} />
+            </View>
+            <Text variant="bodyXs" tone="secondary">
+              {[client.hn, `${client.age} ปี`, client.occupation].filter(Boolean).join(' · ')}
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+              {!healthKnownOf(profile, 'conditions') ? null : <Tag text={profile.conditions.length ? profile.conditions.join(', ') : 'ไม่มีโรคประจำตัว'} tone={profile.conditions.length ? 'warn' : undefined} size="md" />}
+            </View>
+          </Pressable>
+        </View>
+      </Panel>
+
+      <View style={{ flexDirection: 'row', gap: space[2] }}>
+        <StatTile label="รักษาแล้ว" value={`${visits}`} unit="ครั้ง" />
+        <StatTile label="คนไข้ที่ดูแล" value={`${cases.length + drafts.length}`} unit="คน" />
+        <StatTile label="นัดถัดไป" value={nextAppt ? nextAppt.time : '-'} unit={nextAppt ? nextAppt.date : 'ยังไม่มี'} small />
+      </View>
+
+      {/* หนังสือรับรองหมอพื้นบ้าน (ม.บ.3) — สิ่งที่หมอต้องรู้เกี่ยวกับสิทธิ์ของตัวเอง (FR-01, FR-02) */}
+      <Panel title="หนังสือรับรองหมอพื้นบ้าน" flush>
+        <RowLink icon="award" tint={TINT.green} title={`ม.บ.3 ${HEALER_CERT.no}`} sub={`${HEALER_CERT.status} · หมดอายุ ${HEALER_CERT.expire}`} right={<Tag text={HEALER_CERT.status} tone="good" />} />
+        <RowLink icon="user-check" tint={TINT.blue} title="ประเภทหมอ" sub={HEALER_CERT.types.join(' · ')} />
+        <RowLink icon="check-square" tint={TINT.amber} title="กรรมวิธีที่ได้รับรับรอง" sub={CERTIFIED_METHODS.join(' · ')} />
+        <RowLink icon="map-pin" tint={TINT.violet} title="พื้นที่" sub={HEALER_CERT.area} last />
+      </Panel>
+
+      <Panel title="การตั้งค่า" flush>
+        <RowLink icon="lock" tint={TINT.slate} title="ความเป็นส่วนตัวและความยินยอม" onPress={() => nav.navigate('Privacy')} />
+        <RowLink icon="type" tint={TINT.slate} title="ตัวอักษรขนาดใหญ่" sub="สำหรับผู้สูงอายุ" right={<Switch value={textScale > 1} onChange={(v) => setTextScale(v ? 1.2 : 1)} label="ตัวอักษรขนาดใหญ่" />} />
+        <RowLink icon="info" tint={TINT.slate} title="เกี่ยวกับแอป" sub="เวอร์ชัน · เครดิต" onPress={() => nav.navigate('About')} last={!!account?.userId} />
+        {account?.userId ? null : <RowLink icon="briefcase" tint={TINT.slate} title="มุมมองเจ้าหน้าที่ รพ.สต." onPress={() => nav.navigate('ProviderTabs')} last />}
+      </Panel>
+
+      <Panel flush>
+        <RowLink
+          icon="log-out"
+          title="ออกจากระบบ"
+          danger
+          last
+          onPress={() => {
+            // ออกจากหน้าเดิมก่อน แล้วค่อยล้างข้อมูล (หน้าที่กำลังถูกถอดไม่ต้อง render กับข้อมูลที่ถูกล้างกลางทาง)
+            nav.reset({ index: 0, routes: [{ name: 'Auth', params: { out: true } }] });
+            setTimeout(() => signOut(), 0);
+          }}
+        />
+      </Panel>
+      <HealthEditSheet
+        field={editing}
+        value={editing ? profile[editing] : []}
+        onClose={() => setEditing(null)}
+        onSave={(field, list) => {
+          // กรอกข้อไหน = ข้อนั้นรู้แล้ว (ข้ออื่นที่ยังไม่ได้บอก ให้ AI ถามในแชทต่อ)
+          setProfile({ ...profile, [field]: list, healthKnown: true, conditionsKnown: field === 'conditions' || healthKnownOf(profile, 'conditions'), medicationsKnown: field === 'medications' || healthKnownOf(profile, 'medications'), allergiesKnown: field === 'allergies' || healthKnownOf(profile, 'allergies') });
+          log('พ่อหมอ', `แก้ไข${HEALTH_FIELDS[field].title}: ${list.join(', ') || 'ไม่มี'}`);
+          setEditing(null);
+        }}
+      />
+      <PhrLinkSheet
+        visible={linking}
+        onClose={() => setLinking(false)}
+        onImport={(src, rec) => {
+          // รวมกับที่กรอกเองไว้ (ไม่ทับทิ้ง)
+          const merge = (a: string[], b: string[]) => [...a, ...b].filter((x, i, all) => all.indexOf(x) === i);
+          setProfile({ ...profile, conditions: merge(profile.conditions, rec.conditions), medications: merge(profile.medications, rec.medications), allergies: merge(profile.allergies, rec.allergies), healthKnown: true, conditionsKnown: true, medicationsKnown: true, allergiesKnown: true, phrSource: src });
+          log('พ่อหมอ', `เชื่อมประวัติสุขภาพจาก ${src}`);
+          setLinking(false);
+        }}
+      />
+      {/* เครดิตตามเงื่อนไข CC BY 4.0 ของโมเดลกายวิภาค */}
+      <Text variant="caption" tone="tertiary" align="center">
+        โมเดลกายวิภาค 3D: BodyParts3D © The Database Center for Life Science (CC BY 4.0) ดัดแปลงผ่าน human-atlas
+      </Text>
+      </>
+      )}
+    </Screen>
+  );
+}
+
+const HEALTH_FIELDS = {
+  conditions: { title: 'โรคประจำตัว', common: [...HEALTH_OPTIONS.filter((o) => o !== 'ไม่มี'), 'ไขมันในเลือดสูง'], placeholder: 'โรคอื่น ๆ' },
+  medications: { title: 'ยาที่ใช้ประจำ', common: MED_OPTIONS.filter((o) => o !== 'ไม่มี'), placeholder: 'ชื่อยาอื่น ๆ' },
+  allergies: { title: 'ประวัติแพ้', common: ALLERGY_OPTIONS.filter((o) => o !== 'ไม่มี'), placeholder: 'แพ้อะไรอีก' },
+} as const;
+
+/** แก้ข้อมูลสุขภาพ: เลือกจากที่พบบ่อย + พิมพ์เพิ่ม · "ไม่มี" = บอกแล้วว่าไม่มี (ต่างจากยังไม่ได้กรอก) */
+function HealthEditSheet({ field, value, onClose, onSave }: { field: keyof typeof HEALTH_FIELDS | null; value: string[]; onClose: () => void; onSave: (f: keyof typeof HEALTH_FIELDS, v: string[]) => void }) {
+  const [list, setList] = React.useState<string[]>([]);
+  const [other, setOther] = React.useState('');
+  React.useEffect(() => {
+    setList(value);
+    setOther('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [field]);
+  if (!field) return null;
+  const f = HEALTH_FIELDS[field];
+  const toggle = (o: string) => (o === 'ไม่มี' ? setList([]) : setList((l) => (l.includes(o) ? l.filter((x) => x !== o) : [...l, o])));
+  const extra = list.filter((x) => !(f.common as readonly string[]).includes(x));
+  return (
+    <BottomSheet
+      visible
+      onClose={onClose}
+      title={f.title}
+      heightRatio={0.7}
+      footer={<Button label="บันทึก" onPress={() => onSave(field, [...list, ...(other.trim() ? [other.trim()] : [])].filter((x, i, a) => a.indexOf(x) === i))} />}
+    >
+      <ReplyChips options={[...f.common, ...extra, 'ไม่มี']} selected={list.length ? list : ['ไม่มี']} onPick={toggle} />
+      <TextField label={f.placeholder} value={other} onChangeText={setOther} placeholder="พิมพ์แล้วกดบันทึก" />
+    </BottomSheet>
+  );
+}
+
+/**
+ * เชื่อมประวัติสุขภาพจากโรงพยาบาล (PHR/HIS ตามสิทธิ) — ขอความยินยอม → ดึงข้อมูล → ตรวจแล้วนำเข้าโปรไฟล์
+ * ⚠️ ต้นแบบ: ข้อมูลที่ดึงมาเป็นตัวอย่าง (ยังไม่ได้ต่อระบบโรงพยาบาลจริง)
+ */
+const PHR_SOURCES = [
+  { name: 'โรงพยาบาลตามสิทธิบัตรทอง', sub: 'ผ่าน Health ID', rec: { conditions: ['ความดันโลหิตสูง'], medications: ['Amlodipine 5 mg'], allergies: [] as string[] } },
+  { name: 'โรงพยาบาลเอกชนที่เคยรักษา', sub: 'ผ่าน PHR', rec: { conditions: [] as string[], medications: [] as string[], allergies: ['แพ้ยา Ibuprofen'] } },
+];
+function PhrLinkSheet({ visible, onClose, onImport }: { visible: boolean; onClose: () => void; onImport: (src: string, rec: { conditions: string[]; medications: string[]; allergies: string[] }) => void }) {
+  const { colors } = useTheme();
+  const [src, setSrc] = React.useState(0);
+  const [stage, setStage] = React.useState<'pick' | 'loading' | 'review'>('pick');
+  React.useEffect(() => {
+    if (visible) setStage('pick');
+  }, [visible]);
+  const s = PHR_SOURCES[src];
+  const fetchRec = () => {
+    setStage('loading');
+    setTimeout(() => setStage('review'), 1200);
+  };
+  const list = (t: string, v: string[]) => <InfoRow key={t} k={t} v={v.join(', ') || 'ไม่มี'} />;
+  return (
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      title="เชื่อมข้อมูลจากโรงพยาบาล"
+      heightRatio={0.72}
+      footer={
+        stage === 'review' ? (
+          <Button label="นำเข้าโปรไฟล์" onPress={() => onImport(s.name, s.rec)} />
+        ) : (
+          <Button label={stage === 'loading' ? 'กำลังดึงข้อมูล…' : 'ยินยอมและดึงข้อมูล'} disabled={stage === 'loading'} onPress={fetchRec} />
+        )
+      }
+    >
+      {stage === 'review' ? (
+        <Panel title={`พบข้อมูลจาก${s.name}`}>
+          {list('โรคประจำตัว', s.rec.conditions)}
+          {list('ยาที่ใช้ประจำ', s.rec.medications)}
+          {list('ประวัติแพ้', s.rec.allergies)}
+          <Text variant="bodyXs" tone="tertiary">
+            ตรวจให้ถูกต้องก่อนนำเข้า แก้ไขเองได้ภายหลัง
+          </Text>
+        </Panel>
+      ) : (
+        <>
+          <Panel flush>
+            {PHR_SOURCES.map((x, i) => (
+              <RowLink key={x.name} icon="home" tint={TINT.blue} title={x.name} sub={x.sub} last={i === PHR_SOURCES.length - 1} onPress={() => setSrc(i)} right={<Icon name={i === src ? 'check-circle' : 'circle'} size="sm" color={i === src ? colors.brand.primary : colors.text.tertiary} />} />
+            ))}
+          </Panel>
+          <Text variant="bodySm" tone="secondary">
+            ดึงเฉพาะโรคประจำตัว ยาที่ใช้ และประวัติแพ้ เพื่อดูข้อควรระวัง ถอนการเชื่อมได้ในหน้าความเป็นส่วนตัว
+          </Text>
+        </>
+      )}
+    </BottomSheet>
+  );
+}
+
+/* ============================================================ 20 PRIVACY CENTER */
+
+export function PrivacyScreen() {
+  const nav = useNav();
+  const { consents, setConsents, audit, log, signOut, profile, setProfile } = useJourney();
+  const [asked, setAsked] = React.useState<null | 'download' | 'delete'>(null);
+  const toggle = (k: keyof typeof consents, label: string) => (v: boolean) => {
+    setConsents({ ...consents, [k]: v });
+    log('พ่อหมอ', `${v ? 'ให้' : 'ถอน'}ความยินยอม: ${label}`);
+  };
+  const items = [
+    ['service', 'ใช้ข้อมูลเพื่อบันทึกและส่งต่อ', 'user-check'],
+    ['aiProcessing', 'หมอบ้าน AI ช่วยกรอก ม.บ.5', 'cpu'],
+    ['followUp', 'ติดตามอาการคนไข้หลังรักษา', 'bell'],
+    ['research', 'ใช้เพื่อวิจัย (ไม่ระบุตัวตน)', 'bar-chart-2'],
+  ] as const;
+  return (
+    <Screen header={<AppBar title="ความเป็นส่วนตัว" onBack={() => nav.goBack()} />}>
+      <Panel title="ความยินยอมของคุณ" right={<Tag text={`${items.filter(([k]) => consents[k]).length}/${items.length} เปิดอยู่`} tone="good" />} flush>
+        {items.map(([k, label, icon], i) => (
+          // ข้อที่จำเป็นต่อการบันทึกการรักษา → ไม่มีสวิตช์ปิดที่ไม่มีผลจริง (ถอนได้ด้วยการขอลบข้อมูล)
+          k === 'service' || k === 'aiProcessing' ? (
+            <RowLink key={k} icon={icon} title={label} sub="จำเป็นต่อการใช้แอป · ถอนได้โดยขอลบข้อมูล" last={i === items.length - 1} right={<Tag text="จำเป็น" />} />
+          ) : (
+            <RowLink key={k} icon={icon} title={label} last={i === items.length - 1} right={<Switch value={consents[k]} onChange={toggle(k, label)} label={label} />} />
+          )
+        ))}
+      </Panel>
+
+      {/* การเชื่อมข้อมูลกับโรงพยาบาล — ถอนได้ (ข้อมูลที่นำเข้าแล้วยังอยู่ แก้ไขเองได้ในโปรไฟล์) */}
+      {profile.phrSource ? (
+        <Panel flush>
+          <RowLink
+            icon="link"
+            tint={TINT.blue}
+            title={`เชื่อมกับ${profile.phrSource}`}
+            sub="ยกเลิกการเชื่อม"
+            last
+            onPress={() => {
+              setProfile({ ...profile, phrSource: undefined });
+              log('พ่อหมอ', `ยกเลิกการเชื่อมข้อมูลกับ${profile.phrSource}`);
+            }}
+          />
+        </Panel>
+      ) : null}
+
+      {/* ใครเข้าถึงข้อมูล: timeline แบบหลังบ้าน */}
+      <Panel icon="clock" tint={TINT.violet} title="ใครเข้าถึงข้อมูลของคุณ">
+        {audit.map((a, i) => (
+          <View key={i} style={{ flexDirection: 'row', gap: space[3] }}>
+            <View style={{ alignItems: 'center', width: 12 }}>
+              <View style={{ width: 9, height: 9, borderRadius: 5, marginTop: 6, backgroundColor: i === audit.length - 1 ? TINT.violet : '#C8C8C4' }} />
+              {i < audit.length - 1 ? <View style={{ flex: 1, width: 1.5, backgroundColor: '#E2E2DF', marginTop: 2 }} /> : null}
+            </View>
+            <View style={{ flex: 1, paddingBottom: i < audit.length - 1 ? space[3] : 0 }}>
+              <Text variant="bodyXs" tone="secondary">
+                วันนี้ {a.at} · {a.actor}
+              </Text>
+              <Text variant="labelMd">{a.action}</Text>
+            </View>
+          </View>
+        ))}
+      </Panel>
+
+      <Panel flush>
+        <RowLink
+          icon="download"
+          tint={TINT.blue}
+          title="ดาวน์โหลดข้อมูลของฉัน"
+          sub={asked === 'download' ? 'ส่งคำขอแล้ว จะส่งไฟล์ให้ทางอีเมลภายใน 24 ชม.' : undefined}
+          onPress={() => {
+            setAsked('download');
+            log('พ่อหมอ', 'ขอดาวน์โหลดข้อมูลของตนเอง');
+          }}
+        />
+        <RowLink icon="trash-2" title="ขอลบข้อมูล" sub="ลบบัญชีและข้อมูลทั้งหมด" danger last onPress={() => setAsked('delete')} />
+      </Panel>
+      {/* ยืนยันก่อนลบ (ย้อนไม่ได้) */}
+      {asked === 'delete' ? (
+        <Panel icon="alert-triangle" tint={TINT.red} title="ลบข้อมูลทั้งหมด?">
+          <Text variant="bodySm" tone="secondary">
+            ทะเบียน ม.บ.5 นัด และผลประเมินในเครื่องจะถูกลบ และออกจากระบบ
+          </Text>
+          <Button
+            label="ยืนยันลบข้อมูล"
+            variant="danger"
+            size="md"
+            onPress={() => {
+              signOut();
+              nav.reset({ index: 0, routes: [{ name: 'Auth', params: { out: true } }] });
+            }}
+          />
+          <Button label="ไม่ลบ" variant="ghost" size="md" onPress={() => setAsked(null)} />
+        </Panel>
+      ) : null}
+    </Screen>
+  );
+}

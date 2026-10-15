@@ -1,0 +1,67 @@
+/**
+ * AI Service — LLM สำหรับแชท (Gemma 4 31B ผ่าน vLLM · OpenAI-compatible)
+ * ------------------------------------------------------------------
+ * ใช้ทำ 3 อย่าง: เข้าใจข้อความอิสระ → ข้อมูลมีโครง (JSON schema) · ตอบคำถามจากข้อมูลการรักษาของคนไข้ · สรุปเป็นภาษาง่าย
+ * ❌ ไม่ใช้ตัดสินเรื่องความปลอดภัย/สัญญาณอันตราย — ใช้ safetyEngine (กฎตายตัว) เท่านั้น
+ *
+ * ⚠️ ต้นแบบ: แอปเรียก endpoint ตรง (ยังไม่มี key) — ใช้ได้กับข้อมูลตัวอย่างเท่านั้น
+ *    ของจริงต้องผ่าน backend ของเรา (เก็บ key · ตัดข้อมูลระบุตัวตน · log) → เปลี่ยนที่ AI_BASE_URL ที่เดียว
+ */
+export const AI_BASE_URL = 'https://vllm-gemma.bmscloud.in.th/v1';
+export const AI_MODEL = 'gemma4';
+
+export type AIMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+const SYSTEM_BASE = [
+  'คุณคือ "หมอบ้าน AI" ผู้ช่วยของหมอพื้นบ้านที่ได้รับการรับรอง ช่วยบันทึกทะเบียนการรักษา ม.บ.5 เตือนสัญญาณอันตราย และช่วยส่งต่อโรงพยาบาล ตอบภาษาไทยสุภาพ ลงท้าย "ค่ะ" สั้น กระชับ ไม่เกิน 2–3 ประโยค',
+  'ห้ามวินิจฉัยโรคแทนแพทย์ ห้ามสั่งยาแผนปัจจุบัน ห้ามถามหรือเปิดเผยสูตรตำรับยาของหมอ ห้ามตัดสินว่ารักษาต่อได้หรือไม่ (ระบบคัดกรองสัญญาณอันตรายเป็นคนตัดสิน)',
+  'ถ้าหมอเล่าอาการอันตรายของคนไข้ (งูกัด หนังตาตก ปากเบี้ยว แขนขาอ่อนแรงทันที เจ็บแน่นหน้าอก หายใจลำบาก ไข้สูงในเด็กเล็ก กระดูกหักแผลเปิด) ให้แนะนำส่งต่อ รพ. หรือโทร 1669 ทันที',
+  'ใช้เฉพาะข้อมูลที่ให้มา ถ้าไม่รู้ให้บอกว่าไม่ทราบ อย่าแต่งตัวเลขหรือวันที่ขึ้นเอง',
+].join('\n');
+
+async function call(body: object, timeoutMs = 30000): Promise<string> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: AI_MODEL, temperature: 0.3, max_tokens: 300, ...body }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`AI ${res.status}`);
+    const j = await res.json();
+    return (j.choices?.[0]?.message?.content ?? '').trim();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** เรียกโมเดลตรง (ใช้โดย knowledgeSearch) */
+export const completeAI = (messages: AIMessage[], opts: { max_tokens?: number; temperature?: number; response_format?: object } = {}, timeoutMs?: number) =>
+  call({ messages, ...opts }, timeoutMs);
+
+/** ตอบคำถามอิสระ โดยใช้ข้อมูลของคนไข้เป็นบริบท */
+export async function askAI(question: string, context: string, history: AIMessage[] = []): Promise<string> {
+  return call({
+    messages: [{ role: 'system', content: `${SYSTEM_BASE}\n\nข้อมูลของหมอและคนไข้:\n${context}` }, ...history.slice(-6), { role: 'user', content: question }],
+  });
+}
+
+/** แปลงข้อความอิสระเป็นข้อมูลตาม JSON schema (temperature 0) */
+export async function extractAI<T>(instruction: string, text: string, schema: object, name = 'result', maxTokens = 200): Promise<T> {
+  const out = await call({
+    temperature: 0,
+    max_tokens: maxTokens,
+    messages: [
+      { role: 'system', content: instruction },
+      { role: 'user', content: text },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name, schema } },
+  });
+  try {
+    return JSON.parse(out) as T;
+  } catch {
+    throw new Error(`AI JSON: ${out.slice(0, 400)}`);
+  }
+}

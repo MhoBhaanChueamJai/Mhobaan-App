@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "MohbanHealth",
+    "slug": "mohban-health",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.healthflow.mohbanhealth"
+    },
+    "android": {
+      "package": "com.healthflow.mohbanhealth"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "ใช้ไมค์เมื่อคุณเลือกเล่าอาการด้วยเสียงกับ MohbanHealth (ถอดเสียงเป็นข้อความ ไม่เก็บไฟล์เสียง)"
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "ใช้ Face ID ปลดล็อก MohbanHealth เพื่อปกป้องข้อมูลสุขภาพของคุณ"
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "ใช้ Face ID ปลดล็อก MohbanHealth เพื่อปกป้องข้อมูลสุขภาพของคุณ"
+        }
+      ]
+    ]
+  }
+}
